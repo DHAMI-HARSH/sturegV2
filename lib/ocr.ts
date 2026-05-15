@@ -13,15 +13,12 @@ const MAX_DEBUG_TEXT_LENGTH = 1200;
 const SLOW_OCR_WARNING_MS = 60000;
 const TESSERACT_WORKER_PATH = path.join(
   process.cwd(),
-  "node_modules",
-  "tesseract.js",
-  "src",
-  "worker-script",
-  "node",
-  "index.js",
+  "lib",
+  "tesseract-worker.cjs",
 );
-const TESSERACT_CORE_PATH = path.join(process.cwd(), "node_modules", "tesseract.js-core");
-const TESSERACT_CACHE_PATH = path.join(process.cwd(), ".tesseract-cache");
+const TESSERACT_CACHE_PATH = process.env.VERCEL
+  ? path.join("/tmp", ".tesseract-cache")
+  : path.join(process.cwd(), ".tesseract-cache");
 
 const NAME_STOP_WORDS = new Set([
   "NAME", "STUDENT", "DATE", "RECEIPT", "FEE", "SEMESTER",
@@ -391,7 +388,6 @@ async function getOcrWorker(key: WorkerKey): Promise<Tesseract.Worker> {
         // Next.js can break Tesseract's auto-detection of the worker thread
         // entrypoint. Use explicit local paths to keep resolution stable.
         workerPath: TESSERACT_WORKER_PATH,
-        corePath: TESSERACT_CORE_PATH,
         cachePath: TESSERACT_CACHE_PATH,
       });
       if (key === "restricted") {
