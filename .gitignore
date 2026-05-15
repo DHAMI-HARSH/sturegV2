@@ -33,8 +33,24 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# local secrets and deployment config
+!.env.example
+.env.local
+.env*.local
+
+# seed/database snapshots and local bootstrap data
+scripts/seed.ts
+lib/db-seed.ts
+supabase/seed.sql
+supabase/*.dump
+*.sql.gz
+
 # vercel
 .vercel
+
+# local next dev logs
+.next-dev.log
+.next-dev.err.log
 
 # typescript
 *.tsbuildinfo

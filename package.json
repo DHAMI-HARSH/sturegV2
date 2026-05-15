@@ -6,12 +6,30 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.2.2",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.37.0",
+    "bcryptjs": "^3.0.3",
+    "chrono-node": "^2.9.0",
+    "cloudinary": "^2.10.0",
+    "dotenv": "^17.2.3",
+    "file-type": "^22.0.1",
+    "json2csv": "^6.0.0-alpha.2",
+    "lucide-react": "^1.11.0",
     "next": "16.2.4",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-hook-form": "^7.74.0",
+    "resend": "^6.12.2",
+    "sharp": "^0.34.5",
+    "sonner": "^2.0.7",
+    "tesseract.js": "^7.0.0",
+    "tsx": "^4.20.6",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
