@@ -246,56 +246,6 @@ function pickBestNameCandidate(candidates: NameCandidate[], expectedFullName: st
   return bestCandidate;
 }
 
-function normalizeAmountToken(value: string) {
-  return value.replace(/[, ]+/g, "").trim();
-}
-
-function formatAmount(value: string) {
-  const normalized = normalizeAmountToken(value).replace(/^Rs\.?/i, "");
-  const numeric = normalized.match(/\d+(?:\.\d{1,2})?/);
-  return numeric?.[0] ?? null;
-}
-
-function extractLikelyAmount(text: string): string | null {
-  const labeledAmount = extractLabeledField(
-    text,
-    [
-      "amount\\s+paid",
-      "paid\\s+amount",
-      "amount",
-      "total\\s+amount",
-      "total",
-      "fees?",
-      "payment",
-    ],
-    "(?:Rs\\.?\\s*)?\\d[\\d, ]*(?:\\.\\d{1,2})?",
-  );
-
-  if (labeledAmount) {
-    return formatAmount(labeledAmount);
-  }
-
-  const amountMatches = Array.from(
-    text.matchAll(/\b(?:Rs\.?\s*)?(\d[\d, ]{2,}(?:\.\d{1,2})?)\b/g),
-    (match) => formatAmount(match[1] ?? ""),
-  ).filter((value): value is string => Boolean(value));
-
-  if (!amountMatches.length) {
-    return null;
-  }
-
-  const sorted = amountMatches
-    .map((value) => Number(value))
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .sort((a, b) => b - a);
-
-  if (!sorted.length) {
-    return null;
-  }
-
-  return sorted[0].toFixed(sorted[0] % 1 === 0 ? 0 : 2);
-}
-
 function matchExpectedStudentName(text: string, expectedFullName: string) {
   const candidates = extractLikelyNameCandidates(text);
   const bestCandidate = pickBestNameCandidate(candidates, expectedFullName);
@@ -326,9 +276,12 @@ function analyzeReceiptText(text: string, expectedFullName: string) {
   return {
     extractedText: normalizedText,
     date: pickReceiptDate(normalizedText),
-    amountPaid: extractLikelyAmount(normalizedText),
     ...matchExpectedStudentName(text, expectedFullName),
   };
+}
+
+function hasEnoughReceiptEvidence(analysis: ReturnType<typeof analyzeReceiptText>) {
+  return Boolean(analysis.date && analysis.matched !== null);
 }
 
 function extractLabeledFieldDate(text: string) {
@@ -503,8 +456,8 @@ async function runOcrAttempt(
   const restrictedAnalysis = analyzeReceiptText(restrictedText, expectedFullName);
 
   // The unrestricted worker is significantly slower. Only invoke it when the
-  // first pass still needs help confirming the student's name.
-  if (restrictedAnalysis.date && restrictedAnalysis.matched === true) {
+  // first pass is still missing either a reliable date or a clear name result.
+  if (hasEnoughReceiptEvidence(restrictedAnalysis)) {
     return {
       analysis: restrictedAnalysis,
       text: restrictedText,
@@ -535,7 +488,7 @@ async function extractFromRenderedImage(buffer: Buffer, expectedFullName: string
   );
   let bestAttempt = normalAttempt;
 
-  if (!bestAttempt.analysis.date || bestAttempt.analysis.matched !== true) {
+  if (!hasEnoughReceiptEvidence(bestAttempt.analysis)) {
     const thresholdAttempt = await runOcrAttempt(thresholdImage, buffer, expectedFullName);
     attempts.push(thresholdAttempt);
     timingNotes.push(
@@ -546,7 +499,7 @@ async function extractFromRenderedImage(buffer: Buffer, expectedFullName: string
     }
   }
 
-  if (!bestAttempt.analysis.date || bestAttempt.analysis.detectedName === null) {
+  if (!hasEnoughReceiptEvidence(bestAttempt.analysis)) {
     const contrastAttempt = await runOcrAttempt(contrastImage, buffer, expectedFullName);
     attempts.push(contrastAttempt);
     timingNotes.push(
@@ -605,7 +558,7 @@ export async function extractReceiptInsights(input: {
   const rawAnalysis = analyzeReceiptText(rawText, input.expectedFullName);
   timingNotes.push(`raw=${Date.now() - rawStartedAt}ms`);
 
-  if (rawAnalysis.date && rawAnalysis.matched === true) {
+  if (hasEnoughReceiptEvidence(rawAnalysis)) {
     timingNotes.push(`total=${Date.now() - startedAt}ms`);
     return {
       ...rawAnalysis,
