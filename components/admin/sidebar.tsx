@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { BarChart3, Files, LayoutDashboard, PenSquare, Settings, Users } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { BarChart3, Files, LayoutDashboard, LogOut, PenSquare, Settings, Users } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 
 const items = [
   { href: "/admin/dashboard/requests", label: "Pending Requests", icon: Files },
@@ -15,6 +17,26 @@ const items = [
 
 export function AdminSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  async function logout() {
+    try {
+      const response = await fetch("/api/auth/admin/logout", {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(data?.error ?? "Could not log out.");
+      }
+
+      router.replace("/admin/login");
+      router.refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not log out.");
+    }
+  }
 
   return (
     <aside className="flex w-full max-w-xs flex-col gap-2 border-r border-[rgba(20,46,92,0.12)] bg-[rgba(250,252,255,0.84)] p-4 backdrop-blur-xl">
@@ -41,6 +63,17 @@ export function AdminSidebar() {
           </Link>
         );
       })}
+
+      <div className="mt-auto pt-4">
+        <Button
+          variant="secondary"
+          onClick={logout}
+          className="flex w-full items-center justify-center gap-2"
+        >
+          <LogOut className="h-4 w-4" />
+          <span>Log out</span>
+        </Button>
+      </div>
     </aside>
   );
 }

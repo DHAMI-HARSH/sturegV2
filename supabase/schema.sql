@@ -80,8 +80,20 @@ create table if not exists audit_logs (
   created_at timestamptz not null default now()
 );
 
+create table if not exists fee_receipts (
+  id uuid primary key default gen_random_uuid(),
+  receipt_no text not null unique,
+  ref_no text unique,
+  student_name text,
+  receipt_date timestamptz not null,
+  submitted_by_student_id uuid not null references students(id) on delete cascade,
+  submitted_at timestamptz not null default now()
+);
+
 create index if not exists students_status_idx on students(status);
 create index if not exists students_last_login_requested_at_idx on students(last_login_requested_at desc);
 create index if not exists student_forms_student_id_idx on student_forms(student_id);
 create index if not exists registration_form_configs_is_active_idx on registration_form_configs(is_active);
 create index if not exists semester_configs_is_active_idx on semester_configs(is_active);
+create index if not exists fee_receipts_submitted_by_student_id_idx on fee_receipts(submitted_by_student_id);
+create index if not exists fee_receipts_receipt_date_idx on fee_receipts(receipt_date desc);

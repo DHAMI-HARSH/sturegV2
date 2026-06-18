@@ -1,6 +1,8 @@
 import type { ReceiptValidationStatus } from "@/lib/db-types";
 
 export type ParsedReceiptOcrDebug = {
+  receiptNo: string | null;
+  refNo: string | null;
   detectedDate: string | null;
   detectedName: string | null;
   nameMatched: "yes" | "no" | "uncertain" | null;
@@ -8,7 +10,7 @@ export type ParsedReceiptOcrDebug = {
 };
 
 function parseLabeledLine(debugText: string, label: string) {
-  const match = debugText.match(new RegExp(`^${label}:\\s*(.+)$`, "mi"));
+  const match = debugText.match(new RegExp(`^${label}\\s*:\\s*(.+)$`, "mi"));
   return match?.[1]?.trim() ?? null;
 }
 
@@ -24,6 +26,8 @@ export function parseReceiptOcrDebugText(debugText: string | null): ParsedReceip
       : null;
 
   return {
+    receiptNo: parseLabeledLine(debugText, "Receipt No"),
+    refNo: parseLabeledLine(debugText, "Ref No"),
     detectedDate: parseLabeledLine(debugText, "Detected date"),
     detectedName: parseLabeledLine(debugText, "Detected name"),
     nameMatched: normalizedMatch,

@@ -93,6 +93,16 @@ type AuditLogRow = {
   created_at: string;
 };
 
+type FeeReceiptRow = {
+  id: string;
+  receipt_no: string;
+  ref_no: string | null;
+  student_name: string | null;
+  receipt_date: string;
+  submitted_by_student_id: string;
+  submitted_at: string;
+};
+
 function asDate(value: string | null) {
   return value ? new Date(value) : null;
 }
@@ -137,6 +147,15 @@ function isMissingReceiptOcrDebugTextColumnError(error: unknown) {
 
 function isMissingFormDataColumnError(error: unknown) {
   return error instanceof AppError && error.message.includes("'form_data' column");
+}
+
+function isMissingFeeReceiptsTableError(error: unknown) {
+  return (
+    error instanceof AppError &&
+    (error.message.includes("fee_receipts") ||
+      error.message.toLowerCase().includes("schema cache") ||
+      error.message.toLowerCase().includes("relation"))
+  );
 }
 
 function isMissingRegistrationConfigTableError(error: unknown) {
@@ -367,6 +386,73 @@ export async function getActiveSemesterConfig() {
   });
 
   return row ? mapSemesterConfig(row) : null;
+}
+
+export async function getFeeReceiptByReceiptNo(receiptNo: string) {
+  try {
+    const row = await findOne<FeeReceiptRow>("fee_receipts", {
+      select: "*",
+      receipt_no: `eq.${receiptNo}`,
+    });
+
+    return row;
+  } catch (error) {
+    if (isMissingFeeReceiptsTableError(error)) {
+      throw new AppError(
+        "Fee receipt table is missing. Apply the updated Supabase schema first.",
+        500,
+      );
+    }
+
+    throw error;
+  }
+}
+
+export async function getFeeReceiptByRefNo(refNo: string) {
+  try {
+    const row = await findOne<FeeReceiptRow>("fee_receipts", {
+      select: "*",
+      ref_no: `eq.${refNo}`,
+    });
+
+    return row;
+  } catch (error) {
+    if (isMissingFeeReceiptsTableError(error)) {
+      throw new AppError(
+        "Fee receipt table is missing. Apply the updated Supabase schema first.",
+        500,
+      );
+    }
+
+    throw error;
+  }
+}
+
+export async function createFeeReceipt(input: {
+  receiptNo: string;
+  refNo: string | null;
+  studentName: string | null;
+  receiptDate: Date;
+  submittedByStudentId: string;
+}) {
+  try {
+    return await insertOne<FeeReceiptRow>("fee_receipts", {
+      receipt_no: input.receiptNo,
+      ref_no: input.refNo,
+      student_name: input.studentName,
+      receipt_date: input.receiptDate.toISOString(),
+      submitted_by_student_id: input.submittedByStudentId,
+    });
+  } catch (error) {
+    if (isMissingFeeReceiptsTableError(error)) {
+      throw new AppError(
+        "Fee receipt table is missing. Apply the updated Supabase schema first.",
+        500,
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function listReviewRequests() {

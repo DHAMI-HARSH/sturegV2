@@ -27,15 +27,18 @@ const NAME_STOP_WORDS = new Set([
   "THE", "AND", "FOR", "OF", "TO", "IN", "IS", "ON",
 ]);
 
-const NON_STUDENT_NAME_CONTEXT = /(father'?s?\s+name|mother'?s?\s+name|parent'?s?\s+name|guardian'?s?\s+name|\bfather\b|\bmother\b|\bparent\b|\bguardian\b|\bs\/o\b|\bd\/o\b|\bw\/o\b|\bc\/o\b)/i;
+const RECEIPT_NO_PATTERN = /^[A-Z0-9][A-Z0-9/-]{5,24}$/i;
+const REF_NO_PATTERN = /^[A-Z]{0,4}\s*\d{4,12}$/;
+
+const NON_STUDENT_NAME_CONTEXT =
+  /(father'?s?\s*[/\\]?\s*mother'?s?\s+name|father'?s?\s+name|mother'?s?\s+name|parent'?s?\s+name|guardian'?s?\s+name|\bfather\b|\bmother\b|\bparent\b|\bguardian\b|\bs\/o\b|\bd\/o\b|\bw\/o\b|\bc\/o\b)/i;
 
 const NAME_LABELS = [
   "student'?s?\\s+name",
-  "student\\s+name",
-  "candidate\\s+name",
-  "applicant\\s+name",
-  "name\\s+of\\s+student",
-  "name\\s+of\\s+candidate",
+  "candidate'?s?\\s+name",
+  "applicant'?s?\\s+name",
+  "name\\s+of\\s+(?:the\\s+)?student",
+  "name\\s+of\\s+(?:the\\s+)?candidate",
   "\\bname\\b",
   "\\bnm\\b",
 ];
@@ -66,6 +69,10 @@ function extractSearchableText(buffer: Buffer) {
       .replace(/\\([()\\])/g, "$1")
       .replace(/[^\x20-\x7E]+/g, " "),
   );
+}
+
+function normalizeReceiptNo(value: string) {
+  return squeezeWhitespace(value).toUpperCase().replace(/\s+/g, "");
 }
 
 function levenshtein(a: string, b: string): number {
@@ -108,6 +115,38 @@ function extractLabeledField(text: string, labels: string[], valuePattern: strin
   }
 
   return null;
+}
+
+function extractReceiptIds(text: string): { receiptNo: string | null; refNo: string | null } {
+  const receiptNo =
+    extractLabeledField(
+      text,
+      [
+        "receipt\\s*no\\.?",
+        "rec\\.?\\s*no\\.?",
+        "receipt\\s*#",
+        "receipt\\s*number",
+        "receipt\\s*id",
+      ],
+      "[A-Z0-9][A-Z0-9/-]{5,24}",
+    )?.replace(/\s+/g, "") ??
+    text
+      .match(
+        /\b(?:receipt|rec)\s*\.?\s*(?:no|number|id)\s*[:#\-]?\s*([A-Z0-9][A-Z0-9/-]{5,24})/i,
+      )
+      ?.[1]
+      ?.replace(/\s+/g, "") ??
+    null;
+
+  const refNoMatch = text.match(
+    /\bref(?:erence)?\s*\.?\s*no\.?\s*[:\-]?\s*([A-Z]{0,4}\s*\d{4,12})/i,
+  );
+  const refNo = refNoMatch?.[1] ? squeezeWhitespace(refNoMatch[1]) : null;
+
+  return {
+    receiptNo: receiptNo ? normalizeReceiptNo(receiptNo) : null,
+    refNo,
+  };
 }
 
 type NameCandidate = {
@@ -270,15 +309,21 @@ function matchExpectedStudentName(text: string, expectedFullName: string) {
 
 function analyzeReceiptText(text: string, expectedFullName: string) {
   const normalizedText = squeezeWhitespace(text);
+  const { receiptDate, chequeDate } = extractPaymentDates(normalizedText);
+  const { receiptNo, refNo } = extractReceiptIds(normalizedText);
   return {
     extractedText: normalizedText,
-    date: pickReceiptDate(normalizedText),
+    date: receiptDate,
+    receiptDate,
+    chequeDate,
+    receiptNo,
+    refNo,
     ...matchExpectedStudentName(text, expectedFullName),
   };
 }
 
 function hasEnoughReceiptEvidence(analysis: ReturnType<typeof analyzeReceiptText>) {
-  return Boolean(analysis.date && analysis.matched !== null);
+  return Boolean(analysis.date && analysis.matched !== null && analysis.receiptNo);
 }
 
 function extractLabeledFieldDate(text: string) {
@@ -300,6 +345,18 @@ function extractLikelyDateSnippets(text: string) {
     /\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b|\b\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}\b|\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}\b|\b[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}\b/g;
 
   return Array.from(new Set(cleaned.match(regex) ?? []));
+}
+
+function parseChronoDate(value: string | null): Date | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = chrono.parse(value, new Date(), { forwardDate: false }).find((entry) =>
+    entry.start.isCertain("day"),
+  );
+
+  return parsed?.start.date() ?? null;
 }
 
 function pickReceiptDate(text: string): Date | null {
@@ -324,6 +381,24 @@ function pickReceiptDate(text: string): Date | null {
     );
 
   return candidates[0] ?? null;
+}
+
+function extractPaymentDates(text: string): { receiptDate: Date | null; chequeDate: Date | null } {
+  const labeledDate = extractLabeledFieldDate(text);
+  const receiptDate = parseChronoDate(labeledDate) ?? pickReceiptDate(text);
+  const chequeDateMatch = text.match(/\bDT\s+(\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4})\b/i);
+  const chequeDate = parseChronoDate(chequeDateMatch?.[1] ?? null);
+
+  return { receiptDate, chequeDate };
+}
+
+function isDatesSuspicious(receiptDate: Date | null, chequeDate: Date | null): boolean {
+  if (!receiptDate || !chequeDate) {
+    return false;
+  }
+
+  const diffDays = (receiptDate.getTime() - chequeDate.getTime()) / (1000 * 60 * 60 * 24);
+  return diffDays > 30 || diffDays < 0;
 }
 
 async function normalizeImage(buffer: Buffer) {
@@ -428,6 +503,8 @@ async function runQueuedOcr(buffer: Buffer, workerKey: WorkerKey = "restricted")
 function scoreAnalysis(analysis: ReturnType<typeof analyzeReceiptText>): number {
   let score = 0;
   if (analysis.date) score += 50;
+  if (analysis.receiptNo) score += 30;
+  if (analysis.refNo) score += 10;
   if (analysis.matched === true) score += 40;
   else if (analysis.matched === null) score += 10;
   if (analysis.detectedName) score += 20;
@@ -524,18 +601,41 @@ function buildOcrDebugText(input: {
   matched: boolean | null;
   detectedName: string | null;
   date: Date | null;
+  receiptNo: string | null;
+  refNo: string | null;
   extractedText: string;
   timingNotes?: string[];
 }) {
   return [
+    `Receipt No   : ${input.receiptNo ?? "not found"}`,
+    `Ref No       : ${input.refNo ?? "not found"}`,
     `Detected date: ${input.date ? input.date.toISOString().slice(0, 10) : "not found"}`,
     `Detected name: ${input.detectedName ?? "not found"}`,
-    `Name matched: ${input.matched === true ? "yes" : input.matched === false ? "no" : "uncertain"}`,
-    ...(input.timingNotes?.length ? [`OCR timing: ${input.timingNotes.join(" | ")}`] : []),
-    `OCR text: ${input.extractedText || "none"}`,
+    `Name matched : ${input.matched === true ? "yes" : input.matched === false ? "no" : "uncertain"}`,
+    ...(input.timingNotes?.length ? [`OCR timing   : ${input.timingNotes.join(" | ")}`] : []),
+    `OCR text     : ${input.extractedText || "none"}`,
   ]
     .join("\n")
     .slice(0, MAX_DEBUG_TEXT_LENGTH);
+}
+
+export function validateReceiptIdFormats(receiptNo: string | null, refNo: string | null): {
+  valid: boolean;
+  reason?: string;
+} {
+  if (!receiptNo) return { valid: false, reason: "Missing receipt number" };
+  if (!RECEIPT_NO_PATTERN.test(receiptNo)) {
+    return { valid: false, reason: `Invalid receipt no format: ${receiptNo}` };
+  }
+  if (refNo && !REF_NO_PATTERN.test(refNo)) {
+    return { valid: false, reason: `Invalid ref no format: ${refNo}` };
+  }
+
+  return { valid: true };
+}
+
+export function datesAreSuspicious(receiptDate: Date | null, chequeDate: Date | null): boolean {
+  return isDatesSuspicious(receiptDate, chequeDate);
 }
 
 export async function extractReceiptInsights(input: {

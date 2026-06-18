@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,11 +40,23 @@ async function fetchReviewRequests() {
   return data.requests ?? [];
 }
 
+function getReceiptPreviewSrc(receiptUrl: string) {
+  if (!receiptUrl.toLowerCase().endsWith(".pdf")) {
+    return receiptUrl;
+  }
+
+  return receiptUrl.replace(/\/upload\//, "/upload/pg_1/f_jpg/").replace(/\.pdf$/i, ".jpg");
+}
+
 export function RequestsTable() {
   const [loading, setLoading] = useState(true);
   const [requests, setRequests] = useState<RequestItem[]>([]);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [previewingRequest, setPreviewingRequest] = useState<RequestItem | null>(null);
+  const previewSrc = previewingRequest?.receiptUrl
+    ? getReceiptPreviewSrc(previewingRequest.receiptUrl)
+    : null;
 
   useEffect(() => {
     void (async () => {
@@ -141,14 +154,23 @@ export function RequestsTable() {
                     </td>
                     <td className="px-4 py-4">
                       {request.receiptUrl ? (
-                        <a
-                          href={request.receiptUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[var(--accent-strong)] underline underline-offset-4"
-                        >
-                          Preview
-                        </a>
+                        <div className="flex flex-col gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewingRequest(request)}
+                            className="text-left text-[var(--accent-strong)] underline underline-offset-4"
+                          >
+                            View receipt
+                          </button>
+                          <a
+                            href={request.receiptUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-[var(--muted)] underline underline-offset-4"
+                          >
+                            Open in new tab
+                          </a>
+                        </div>
                       ) : (
                         "Missing"
                       )}
@@ -161,6 +183,18 @@ export function RequestsTable() {
                         {request.receiptValidationStatus ?? "N/A"}
                       </Badge>
                       <div className="mt-2 space-y-1 text-xs text-[var(--muted)]">
+                        <p>
+                          Receipt no:{" "}
+                          <span className="font-medium text-[var(--accent-strong)]">
+                            {ocr?.receiptNo ?? "Not found"}
+                          </span>
+                        </p>
+                        <p>
+                          Ref no:{" "}
+                          <span className="font-medium text-[var(--accent-strong)]">
+                            {ocr?.refNo ?? "Not found"}
+                          </span>
+                        </p>
                         <p>
                           Student name:{" "}
                           <span className="font-medium text-[var(--accent-strong)]">
@@ -220,6 +254,43 @@ export function RequestsTable() {
               Confirm rejection
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(previewingRequest)}
+        title={previewingRequest ? `Receipt Preview · ${previewingRequest.ddNumber}` : "Receipt Preview"}
+        onClose={() => setPreviewingRequest(null)}
+        panelClassName="max-w-5xl"
+      >
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-[rgba(20,46,92,0.16)] bg-white p-3">
+            {previewSrc ? (
+              <div className="relative h-[70vh] overflow-hidden rounded-xl border border-[rgba(20,46,92,0.12)] bg-slate-50">
+                <Image
+                  src={previewSrc}
+                  alt="Uploaded receipt preview"
+                  fill
+                  sizes="(max-width: 768px) 100vw, 80vw"
+                  className="object-contain"
+                />
+              </div>
+            ) : (
+              <div className="flex h-[40vh] items-center justify-center rounded-xl border border-dashed border-[rgba(20,46,92,0.2)] text-sm text-[var(--muted)]">
+                No receipt uploaded
+              </div>
+            )}
+          </div>
+          {previewingRequest?.receiptUrl ? (
+            <a
+              href={previewingRequest.receiptUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm text-[var(--accent-strong)] underline underline-offset-4"
+            >
+              Open receipt in a new tab
+            </a>
+          ) : null}
         </div>
       </Modal>
     </>

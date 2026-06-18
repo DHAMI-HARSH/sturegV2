@@ -1,10 +1,12 @@
 import { fileTypeFromBuffer } from "file-type";
 import type { ReceiptValidationStatus, StudentStatus } from "@/lib/db-types";
-import { extractReceiptInsights } from "@/lib/ocr";
 import { uploadReceipt } from "@/lib/cloudinary";
 import {
+  createFeeReceipt,
   createStudentAccount,
   getActiveSemesterConfig,
+  getFeeReceiptByReceiptNo,
+  getFeeReceiptByRefNo,
   getStudentByDdNumber,
   updateStudentById,
 } from "@/lib/db";
@@ -12,6 +14,7 @@ import { AppError } from "@/lib/errors";
 import { handleRouteError, ok } from "@/lib/http";
 import { studentLoginRateLimit } from "@/lib/ratelimit";
 import { applySessionToResponse } from "@/lib/session";
+import { datesAreSuspicious, extractReceiptInsights, validateReceiptIdFormats } from "@/lib/ocr";
 import { studentLoginSchema } from "@/lib/validators";
 
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "application/pdf"]);
@@ -47,6 +50,38 @@ function manualReviewResponse(input: {
   );
 }
 
+async function persistManualReview(input: {
+  studentId: string;
+  studentName: string;
+  ddNumber: string;
+  receiptUrl: string;
+  receiptDate: Date | null;
+  receiptOcrDebugText: string | null;
+  receiptValidationStatus: ReceiptValidationStatus;
+  receiptValidationMessage: string;
+}) {
+  const updated = await updateStudentById(input.studentId, {
+    studentName: input.studentName,
+    receiptUrl: input.receiptUrl,
+    receiptDate: input.receiptDate,
+    lastLoginRequestedAt: new Date(),
+    receiptValidationStatus: input.receiptValidationStatus,
+    receiptValidationMessage: input.receiptValidationMessage,
+    receiptOcrDebugText: input.receiptOcrDebugText,
+    status: "PENDING" as StudentStatus,
+    rejectionNote: null,
+  });
+
+  return manualReviewResponse({
+    studentId: updated.id,
+    status: updated.status,
+    ddNumber: updated.ddNumber,
+    receiptDate: updated.receiptDate,
+    message:
+      "Receipt uploaded successfully. It has been sent to the admin panel for manual review.",
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -55,8 +90,15 @@ export async function POST(request: Request) {
       ddNumber: formData.get("ddNumber"),
     });
 
-    const rateLimit = await studentLoginRateLimit.limit(parsed.ddNumber);
-    if (!rateLimit.success) {
+    let rateLimit = null;
+    try {
+      rateLimit = await studentLoginRateLimit.limit(parsed.ddNumber);
+    } catch (error) {
+      // Fail open if the rate-limit backend is temporarily unavailable.
+      console.warn("Student login rate limit check failed; allowing request.", error);
+    }
+
+    if (rateLimit && !rateLimit.success) {
       throw new AppError("Too many login attempts. Try again in 15 minutes.", 429);
     }
 
@@ -107,64 +149,17 @@ export async function POST(request: Request) {
 
     let receiptDate: Date | null = null;
     let receiptOcrDebugText: string | null = null;
+    let extracted: Awaited<ReturnType<typeof extractReceiptInsights>> | null = null;
 
     try {
-      const extracted = await extractReceiptInsights({
+      extracted = await extractReceiptInsights({
         expectedFullName: parsed.fullName,
         fileBuffer: bytes,
         uploadedUrl: upload.secureUrl,
         previewUrl: upload.previewUrl,
       });
-      receiptDate = extracted.date;
+      receiptDate = extracted.receiptDate ?? extracted.date;
       receiptOcrDebugText = extracted.ocrDebugText;
-
-      if (extracted.matched === false) {
-        const updated = await updateStudentById(student.id, {
-          studentName: parsed.fullName,
-          receiptUrl: upload.secureUrl,
-          receiptDate,
-          lastLoginRequestedAt: new Date(),
-          receiptValidationStatus: "INVALID" as ReceiptValidationStatus,
-          receiptValidationMessage:
-            "Receipt date was found, but the name on the receipt does not match the submitted full name. Manual admin review is required.",
-          receiptOcrDebugText,
-          status: "PENDING" as StudentStatus,
-          rejectionNote: null,
-        });
-
-        return manualReviewResponse({
-          studentId: updated.id,
-          status: updated.status,
-          ddNumber: updated.ddNumber,
-          receiptDate: updated.receiptDate,
-          message:
-            "Receipt uploaded successfully. The receipt name did not match automatically, so your request is waiting for manual admin review.",
-        });
-      }
-
-      if (extracted.matched === null) {
-        const updated = await updateStudentById(student.id, {
-          studentName: parsed.fullName,
-          receiptUrl: upload.secureUrl,
-          receiptDate,
-          lastLoginRequestedAt: new Date(),
-          receiptValidationStatus: "UNREADABLE" as ReceiptValidationStatus,
-          receiptValidationMessage:
-            "Receipt date was found, but the student name could not be confirmed automatically. Manual admin review is required.",
-          receiptOcrDebugText,
-          status: "PENDING" as StudentStatus,
-          rejectionNote: null,
-        });
-
-        return manualReviewResponse({
-          studentId: updated.id,
-          status: updated.status,
-          ddNumber: updated.ddNumber,
-          receiptDate: updated.receiptDate,
-          message:
-            "Receipt uploaded successfully. The receipt name could not be confirmed automatically, so your request is waiting for manual admin review.",
-        });
-      }
     } catch (error) {
       const receiptValidationStatus: ReceiptValidationStatus = "UNREADABLE";
       const receiptValidationMessage =
@@ -195,26 +190,105 @@ export async function POST(request: Request) {
       });
     }
 
-    if (!receiptDate) {
-      const updated = await updateStudentById(student.id, {
+    if (!extracted) {
+      throw new AppError("Could not extract receipt details.", 400);
+    }
+
+    const receiptNo = extracted.receiptNo;
+    const refNo = extracted.refNo;
+    if (!receiptNo) {
+      return persistManualReview({
+        studentId: student.id,
         studentName: parsed.fullName,
+        ddNumber: student.ddNumber,
         receiptUrl: upload.secureUrl,
-        lastLoginRequestedAt: new Date(),
-        receiptValidationStatus: "UNREADABLE" as ReceiptValidationStatus,
+        receiptDate,
+        receiptOcrDebugText,
+        receiptValidationStatus: "UNREADABLE",
+        receiptValidationMessage:
+          "Receipt number could not be detected automatically. Manual admin review is required.",
+      });
+    }
+
+    const formatValidation = validateReceiptIdFormats(receiptNo, refNo);
+    if (!formatValidation.valid) {
+      return persistManualReview({
+        studentId: student.id,
+        studentName: parsed.fullName,
+        ddNumber: student.ddNumber,
+        receiptUrl: upload.secureUrl,
+        receiptDate,
+        receiptOcrDebugText,
+        receiptValidationStatus: "UNREADABLE",
+        receiptValidationMessage:
+          "Receipt number could not be validated automatically. Manual admin review is required.",
+      });
+    }
+
+    if (datesAreSuspicious(receiptDate, extracted.chequeDate)) {
+      throw new AppError(
+        "Receipt date and cheque date are inconsistent. Please upload the original receipt.",
+        400,
+      );
+    }
+
+    const receiptNoDuplicate = await getFeeReceiptByReceiptNo(receiptNo);
+    if (receiptNoDuplicate) {
+      throw new AppError(
+        `Receipt No. ${receiptNo} has already been submitted. Each receipt can only be used once.`,
+        409,
+      );
+    }
+
+    if (refNo) {
+      const refNoDuplicate = await getFeeReceiptByRefNo(refNo);
+      if (refNoDuplicate) {
+        throw new AppError(
+          `Ref No. ${refNo} has already been submitted. Each bank transaction can only be used once.`,
+          409,
+        );
+      }
+    }
+
+    if (!receiptDate) {
+      return persistManualReview({
+        studentId: student.id,
+        studentName: parsed.fullName,
+        ddNumber: student.ddNumber,
+        receiptUrl: upload.secureUrl,
+        receiptDate,
+        receiptOcrDebugText,
+        receiptValidationStatus: "UNREADABLE",
         receiptValidationMessage:
           "A receipt was uploaded, but no valid receipt date could be confirmed automatically. Manual admin review is required.",
-        receiptOcrDebugText,
-        status: "PENDING" as StudentStatus,
-        rejectionNote: null,
       });
+    }
 
-      return manualReviewResponse({
-        studentId: updated.id,
-        status: updated.status,
-        ddNumber: updated.ddNumber,
-        receiptDate: updated.receiptDate,
-        message:
-          "Receipt uploaded successfully. We could not confirm the receipt date automatically, so your request is waiting for manual admin review.",
+    if (extracted.matched === false) {
+      return persistManualReview({
+        studentId: student.id,
+        studentName: parsed.fullName,
+        ddNumber: student.ddNumber,
+        receiptUrl: upload.secureUrl,
+        receiptDate,
+        receiptOcrDebugText,
+        receiptValidationStatus: "INVALID",
+        receiptValidationMessage:
+          "Receipt date was found, but the name on the receipt does not match the submitted full name. Manual admin review is required.",
+      });
+    }
+
+    if (extracted.matched === null) {
+      return persistManualReview({
+        studentId: student.id,
+        studentName: parsed.fullName,
+        ddNumber: student.ddNumber,
+        receiptUrl: upload.secureUrl,
+        receiptDate,
+        receiptOcrDebugText,
+        receiptValidationStatus: "UNREADABLE",
+        receiptValidationMessage:
+          "Receipt date was found, but the student name could not be confirmed automatically. Manual admin review is required.",
       });
     }
 
@@ -240,6 +314,14 @@ export async function POST(request: Request) {
         400,
       );
     }
+
+    await createFeeReceipt({
+      receiptNo,
+      refNo,
+      studentName: parsed.fullName,
+      receiptDate,
+      submittedByStudentId: student.id,
+    });
 
     const updated = await updateStudentById(student.id, {
       studentName: parsed.fullName,

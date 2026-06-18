@@ -71,6 +71,7 @@ This creates:
 - `registration_form_configs`
 - `semester_configs`
 - `audit_logs`
+- `fee_receipts`
 
 It also creates the indexes needed by the current backend.
 
