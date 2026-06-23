@@ -157,6 +157,8 @@ stureg/
 
 The app is optimized for [Vercel](https://vercel.com/). Set the same environment variables from `.env.example` in your Vercel project settings. Do not commit secrets to the repository.
 
+The repository includes a daily Vercel cron that hits `/api/healthcheck`, which performs a tiny Supabase read to keep the project active.
+
 - **Hosting:** Vercel (Next.js)
 - **Database:** Supabase
 - **Images:** Cloudinary
